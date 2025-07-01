@@ -53,8 +53,9 @@ class AbstractStreamerDashboard:
         self.merged_data = pd.DataFrame()
         
         # Configuration
-        self.client_id = os.getenv('TWITCH_CLIENT_ID')
-        self.client_secret = os.getenv('TWITCH_CLIENT_SECRET')
+        import streamlit as st
+        self.client_id = st.secrets["TWITCH_CLIENT_ID"]
+        self.client_secret = st.secrets["TWITCH_CLIENT_SECRET"]
         self.csv_path = os.getenv('CSV_INPUT_PATH', 'streamers.csv')
         self.output_path = os.getenv('CSV_OUTPUT_PATH', 'dashboard_output.csv')
         
