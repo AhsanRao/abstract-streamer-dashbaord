@@ -479,11 +479,13 @@ elif page == "Streamers Directory":
         essential_cols = ['username', 'field']
         business_cols = ['views', 'value', 'engagement_rate', 'business_performance', 'value_per_view']
         social_cols = ['follower_count', 'is_live', 'social_performance', 'broadcaster_tier_score']
-        cross_platform_cols = ['value_per_follower', 'engagement_to_social_ratio']
+        twitter_cols = ['twitter_followers', 'twitter_engagement_rate', 'twitter_posting_frequency', 'twitter_activity_score']
+
+        cross_platform_cols = ['value_per_follower', 'engagement_to_social_ratio', 'total_social_followers', 'cross_platform_reach']
         score_cols = ['performance_score', 'overall_rank']
         
         display_mode = st.radio("View Mode:", 
-                            ["Essential + Scores", "Business Focus", "Social Focus", "Cross-Platform", "All Data"], 
+                            ["Essential + Scores", "Business Focus", "Social Focus", "Twitter Focus", "Cross-Platform", "All Data"], 
                             horizontal=True)
         
         if display_mode == "Essential + Scores":
@@ -494,6 +496,8 @@ elif page == "Streamers Directory":
             display_columns = essential_cols + social_cols + ['live_engagement_rate']
         elif display_mode == "Cross-Platform":
             display_columns = essential_cols + cross_platform_cols + score_cols
+        elif display_mode == "Twitter Focus":
+            display_columns = essential_cols + twitter_cols + score_cols
         else:  # All Data
             exclude_cols = ['id', 'created_at', 'updated_at', 'data_source', 'last_updated']
             display_columns = [col for col in filtered_df.columns if col not in exclude_cols]

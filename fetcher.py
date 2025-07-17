@@ -48,14 +48,16 @@ logging.basicConfig(
 class AbstractStreamerDashboard:
     def __init__(self):
         self.twitch_client = None
+        self.twitter_data = None
         self.streamer_data = pd.DataFrame()
         self.api_data = pd.DataFrame()
         self.merged_data = pd.DataFrame()
         
         # Configuration
         import streamlit as st
-        self.client_id = st.secrets["TWITCH_CLIENT_ID"]
-        self.client_secret = st.secrets["TWITCH_CLIENT_SECRET"]
+        self.client_id = "3thu71n6sc460qellf5yt3f5xn0bth"
+        self.client_secret = "vil5t9qxf5are91ws4lf3h9ohvuifm"
+        self.tweetscout_api_key = "4f0ca11f-7b12-47e2-9132-21705dbe91e8"
         self.csv_path = os.getenv('CSV_INPUT_PATH', 'streamers.csv')
         self.output_path = os.getenv('CSV_OUTPUT_PATH', 'dashboard_output.csv')
         
@@ -199,6 +201,172 @@ class AbstractStreamerDashboard:
         self.api_data = pd.DataFrame(all_data)
         return self.api_data
 
+    # ----------------------------------------------------------------
+    # Twitter Data
+    # ----------------------------------------------------------------
+    async def fetch_twitter_data_batch(self, twitter_usernames: List[str]) -> List[Dict]:
+        """Fetch Twitter data for a batch of usernames using TweetScout API"""
+        import aiohttp
+        
+        batch_data = []
+        
+        if not self.tweetscout_api_key:
+            logging.warning("TweetScout API key not found, skipping Twitter data")
+            return batch_data
+        
+        headers = {
+            'ApiKey': self.tweetscout_api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            for username in twitter_usernames:
+                if not username or pd.isna(username):
+                    continue
+                    
+                try:
+                    # Clean username (remove @ if present)
+                    clean_username = username.replace('@', '').strip()
+                    
+                    payload = {
+                        "link": f"https://twitter.com/{clean_username}"
+                    }
+                    
+                    async with session.post(
+                        'https://api.tweetscout.io/v2/user-tweets',
+                        json=payload,
+                        headers=headers
+                    ) as response:
+                        
+                        if response.status == 200:
+                            data = await response.json()
+                            twitter_metrics = self.process_twitter_response(clean_username, data)
+                            if twitter_metrics:
+                                batch_data.append(twitter_metrics)
+                        else:
+                            logging.warning(f"Failed to fetch Twitter data for {clean_username}: {response.status}")
+                    
+                    # Rate limiting
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    logging.warning(f"Error fetching Twitter data for {username}: {e}")
+                    continue
+        
+        logging.info(f"✅ Processed {len(batch_data)} Twitter profiles")
+        return batch_data
+
+    def process_twitter_response(self, username: str, data: Dict) -> Optional[Dict]:
+        """Process TweetScout API response and extract metrics"""
+        try:
+            tweets = data.get('tweets', [])
+            if not tweets:
+                return None
+            
+            # Get user data from first tweet
+            user_data = tweets[0].get('user', {})
+
+            # logging.info(f"User data for {username}: {user_data}")
+            
+            # Calculate engagement metrics from recent tweets
+            total_engagement = 0
+            total_tweets = len(tweets)
+            recent_tweets = tweets[:20]  # Analyze last 20 tweets
+            
+            engagement_metrics = []
+            for tweet in recent_tweets:
+                engagement = (
+                    tweet.get('reply_count', 0) + 
+                    tweet.get('retweet_count', 0) + 
+                    tweet.get('favorite_count', 0) + 
+                    tweet.get('quote_count', 0)
+                )
+                total_engagement += engagement
+                engagement_metrics.append(engagement)
+            
+            # Calculate posting frequency (tweets per day in last 20 tweets)
+            if len(recent_tweets) >= 2:
+                from datetime import datetime
+                try:
+                    first_tweet_date = datetime.strptime(recent_tweets[-1]['created_at'], '%a %b %d %H:%M:%S %z %Y')
+                    last_tweet_date = datetime.strptime(recent_tweets[0]['created_at'], '%a %b %d %H:%M:%S %z %Y')
+                    days_span = (last_tweet_date - first_tweet_date).days
+                    posting_frequency = len(recent_tweets) / max(days_span, 1)
+                except:
+                    posting_frequency = 0
+            else:
+                posting_frequency = 0
+            
+            # Account age calculation
+            try:
+                account_created = datetime.strptime(user_data.get('created_at', ''), '%a %b %d %H:%M:%S %z %Y')
+                account_age_days = (datetime.now().replace(tzinfo=account_created.tzinfo) - account_created).days
+            except:
+                account_age_days = 0
+
+            # logging.info(f"Account age for {username}: {account_age_days} days")
+            # logging.info(f"Total engagement for {username}: {total_engagement} over {total_tweets} tweets")
+            # logging.info(f"Posting frequency for {username}: {posting_frequency} tweets/day")
+            # logging.info(f"Average engagement for {username}: {total_engagement / max(total_tweets, 1)} per tweet")
+            # logging.info(f"Engagement rate for {username}: {(total_engagement / max(user_data.get('followers_count', 1), 1)) * 100:.2f}%")
+            # logging.info(f"Follower to following ratio for {username}: {user_data.get('followers_count', 0) / max(user_data.get('friends_count', 1), 1):.2f}")
+            # logging.info(f"Tweets per day for {username}: {user_data.get('statuses_count', 0) / max(account_age_days, 1):.2f}")
+            # logging.info(f"Last updated for {username}: {datetime.now().isoformat()}")
+            
+            return {
+                'username': username.lower(),
+                'twitter_username': user_data.get('screen_name', ''),
+                'twitter_name': user_data.get('name', ''),
+                'twitter_followers': user_data.get('followers_count', 0),
+                'twitter_following': user_data.get('friends_count', 0),
+                'twitter_tweets_count': user_data.get('statuses_count', 0),
+                'twitter_account_age_days': account_age_days,
+                'twitter_avg_engagement': total_engagement / max(total_tweets, 1),
+                'twitter_posting_frequency': posting_frequency,
+                'twitter_engagement_rate': (total_engagement / max(user_data.get('followers_count', 1), 1)) * 100,
+                'twitter_follower_to_following_ratio': user_data.get('followers_count', 0) / max(user_data.get('friends_count', 1), 1),
+                'twitter_tweets_per_day': user_data.get('statuses_count', 0) / max(account_age_days, 1),
+                'twitter_last_updated': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logging.error(f"Error processing Twitter data for {username}: {e}")
+            return None
+
+    async def fetch_all_twitter_data(self):
+        """Fetch Twitter data for all streamers"""
+        if self.streamer_data.empty or 'twitter' not in self.streamer_data.columns:
+            logging.warning("No Twitter usernames available in data")
+            return pd.DataFrame()
+        
+        # Get Twitter usernames from CSV data
+        twitter_usernames = self.streamer_data['twitter'].dropna().unique().tolist()
+        twitter_usernames = [u for u in twitter_usernames if u and str(u).strip()]
+        
+        if not twitter_usernames:
+            logging.warning("No valid Twitter usernames found")
+            return pd.DataFrame()
+        
+        logging.info(f"🐦 Fetching Twitter data for {len(twitter_usernames)} profiles...")
+        
+        # Process in smaller batches for Twitter API
+        all_data = []
+        batch_size = 10
+        
+        for i in range(0, len(twitter_usernames), batch_size):
+            batch = twitter_usernames[i:i + batch_size]
+            logging.info(f"📱 Processing Twitter batch {i//batch_size + 1}/{(len(twitter_usernames)-1)//batch_size + 1}")
+            
+            batch_data = await self.fetch_twitter_data_batch(batch)
+            all_data.extend(batch_data)
+            
+            # Rate limiting between batches
+            if i + batch_size < len(twitter_usernames):
+                await asyncio.sleep(2)
+        
+        self.twitter_data = pd.DataFrame(all_data)
+        return self.twitter_data
+    
     def calculate_advanced_metrics(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate realistic performance metrics based on available CSV + Twitch API data"""
         df = data.copy()
@@ -396,6 +564,63 @@ class AbstractStreamerDashboard:
             if df['performance_score'].max() > 0:
                 logging.info(f"📊 Overall Performance Range: {df['performance_score'].min():.3f} - {df['performance_score'].max():.3f}")
             
+            # === TWITTER METRICS ===
+            twitter_cols = {
+                'twitter_followers': 0,
+                'twitter_following': 0, 
+                'twitter_tweets_count': 0,
+                'twitter_avg_engagement': 0,
+                'twitter_posting_frequency': 0,
+                'twitter_engagement_rate': 0,
+                'twitter_account_age_days': 0
+            }
+
+            for col, default_val in twitter_cols.items():
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default_val)
+                else:
+                    df[col] = default_val
+
+            # Twitter-specific metrics
+            if df['twitter_followers'].max() > 0:
+                df['twitter_reach'] = df['twitter_followers']
+                df['twitter_influence_score'] = (
+                    df['twitter_followers'] * 0.6 + 
+                    df['twitter_avg_engagement'] * 0.4
+                ).fillna(0)
+                df['twitter_activity_score'] = (
+                    df['twitter_posting_frequency'] * 0.7 + 
+                    df['twitter_engagement_rate'] * 0.3
+                ).fillna(0)
+
+            # Cross-platform social metrics (Twitch + Twitter)
+            df['total_social_followers'] = df['follower_count'] + df['twitter_followers']
+            if df['total_social_followers'].max() > 0:
+                df['cross_platform_reach'] = df['total_social_followers']
+                df['social_diversification'] = (
+                    df[['follower_count', 'twitter_followers']].min(axis=1) / 
+                    df[['follower_count', 'twitter_followers']].max(axis=1).replace(0, 1)
+                ).fillna(0)
+
+            # Enhanced Social Performance Score (including Twitter)
+            social_components = []
+            social_weights = []
+
+            if df['follower_count'].max() > 0:
+                social_components.append(safe_normalize(df['follower_count']) * 0.3)
+                social_weights.append(0.3)
+
+            if df['twitter_followers'].max() > 0:
+                social_components.append(safe_normalize(df['twitter_followers']) * 0.3)
+                social_weights.append(0.3)
+
+            if 'live_engagement' in df.columns and df['live_engagement'].max() > 0:
+                social_components.append(safe_normalize(df['live_engagement']) * 0.2)
+                social_weights.append(0.2)
+
+            if df['twitter_activity_score'].max() > 0:
+                social_components.append(safe_normalize(df['twitter_activity_score']) * 0.2)
+                social_weights.append(0.2)
             return df
             
         except Exception as e:
@@ -405,73 +630,79 @@ class AbstractStreamerDashboard:
             return df
     
     def merge_and_analyze_data(self):
-        """Merge CSV and API data, then calculate comprehensive metrics"""
+        """Merge CSV, API, and Twitter data, then calculate comprehensive metrics"""
         try:
             if self.streamer_data.empty:
                 logging.error("No CSV data available for merging")
                 return pd.DataFrame()
             
-            if self.api_data.empty:
-                logging.warning("No API data available - using CSV data only")
-                merged = self.streamer_data.copy()
-            else:
-                # Check for overlapping columns and handle them
+            merged = self.streamer_data.copy()
+            
+            # Merge Twitch API data
+            if not self.api_data.empty:
                 csv_columns = set(self.streamer_data.columns)
                 api_columns = set(self.api_data.columns)
-                overlap_columns = csv_columns.intersection(api_columns) - {'username'}  # Keep username for merge
+                overlap_columns = csv_columns.intersection(api_columns) - {'username'}
                 
-                # logging.info(f"🔍 Overlapping columns found: {overlap_columns}")
-                
-                # Remove overlapping columns from CSV data (keep API data as it's more recent)
                 csv_data_clean = self.streamer_data.copy()
                 for col in overlap_columns:
                     if col in csv_data_clean.columns:
-                        # logging.info(f"🗑️ Removing duplicate column from CSV: {col}")
                         csv_data_clean = csv_data_clean.drop(columns=[col])
                 
-                # Perform the merge
+                merged = pd.merge(csv_data_clean, self.api_data, on='username', how='left')
+                logging.info(f"🔗 Merged Twitch data: {len(merged)} total records")
+            
+            # Merge Twitter data
+            if hasattr(self, 'twitter_data') and not self.twitter_data.empty:
+                # Create mapping from twitter username to main username
+                twitter_mapping = {}
+                for _, row in self.streamer_data.iterrows():
+                    if pd.notna(row.get('twitter')):
+                        twitter_username = str(row['twitter']).replace('@', '').strip().lower()
+                        main_username = row['username'].lower()
+                        twitter_mapping[twitter_username] = main_username
+                
+                # Add main username to twitter data for merging
+                self.twitter_data['main_username'] = self.twitter_data['username'].map(
+                    lambda x: twitter_mapping.get(x.lower(), x.lower())
+                )
+
+                existing_twitter_cols = [col for col in merged.columns if col.startswith('twitter_')]
+                if existing_twitter_cols:
+                    merged = merged.drop(columns=existing_twitter_cols)
+                    logging.info(f"Dropped existing Twitter columns: {existing_twitter_cols}")
+                
                 merged = pd.merge(
-                    csv_data_clean, 
-                    self.api_data, 
-                    on='username', 
+                    merged, 
+                    self.twitter_data.drop(columns=['username']), 
+                    left_on='username', 
+                    right_on='main_username', 
                     how='left'
                 )
-                logging.info(f"🔗 Merged data: {len(merged)} total records")
                 
-                # Fill missing API data with defaults for streamers not found on Twitch
-                api_fill_defaults = {
-                    'display_name': merged['username'],
-                    'user_id': '',
-                    'is_live': False,
-                    'current_game': '',
-                    'current_game_id': '',
-                    'viewer_count': 0,
-                    'stream_title': '',
-                    'stream_language': '',
-                    'follower_count': 0,
-                    'profile_image': '',
-                    'broadcaster_type': '',
-                    'account_created': '',
-                    'account_age_days': 0,
-                    'last_updated': ''
-                }
+                # Clean up
+                if 'main_username' in merged.columns:
+                    merged = merged.drop(columns=['main_username'])
                 
-                for col, default_val in api_fill_defaults.items():
-                    if col in merged.columns:
-                        if col == 'display_name':
-                            merged[col] = merged[col].fillna(merged['username'])
-                        else:
-                            merged[col] = merged[col].fillna(default_val)
+                logging.info(f"🐦 Merged Twitter data: {len(merged)} total records")
+            
+            # Fill missing data with defaults
+            self._fill_missing_data_defaults(merged)
             
             # Calculate all metrics
             self.merged_data = self.calculate_advanced_metrics(merged)
             
             # Add report metadata
             self.merged_data['report_generated'] = datetime.now().isoformat()
-            self.merged_data['data_source'] = 'csv+api' if not self.api_data.empty else 'csv_only'
+            data_sources = ['csv']
+            if not self.api_data.empty:
+                data_sources.append('twitch_api')
+            if hasattr(self, 'twitter_data') and not self.twitter_data.empty:
+                data_sources.append('twitter_api')
+            
+            self.merged_data['data_source'] = '+'.join(data_sources)
             
             logging.info(f"✅ Analysis complete for {len(self.merged_data)} streamers")
-            # logging.info(f"📊 Final columns: {list(self.merged_data.columns)}")
             return self.merged_data
             
         except Exception as e:
@@ -480,6 +711,34 @@ class AbstractStreamerDashboard:
             logging.error(f"❌ Full traceback: {traceback.format_exc()}")
             raise
 
+    def _fill_missing_data_defaults(self, merged):
+        """Fill missing data with appropriate defaults"""
+        # Twitch defaults
+        twitch_defaults = {
+            'display_name': merged['username'],
+            'user_id': '', 'is_live': False, 'current_game': '',
+            'viewer_count': 0, 'follower_count': 0, 'broadcaster_type': '',
+            'account_age_days': 0
+        }
+        
+        # Twitter defaults  
+        twitter_defaults = {
+            'twitter_username': '', 'twitter_name': '', 'twitter_followers': 0,
+            'twitter_following': 0, 'twitter_tweets_count': 0, 'twitter_account_age_days': 0,
+            'twitter_avg_engagement': 0, 'twitter_posting_frequency': 0,
+            'twitter_engagement_rate': 0, 'twitter_follower_to_following_ratio': 0,
+            'twitter_tweets_per_day': 0
+        }
+        
+        all_defaults = {**twitch_defaults, **twitter_defaults}
+        
+        for col, default_val in all_defaults.items():
+            if col in merged.columns:
+                if col == 'display_name':
+                    merged[col] = merged[col].fillna(merged['username'])
+                else:
+                    merged[col] = merged[col].fillna(default_val)
+                    
     def export_data(self):
         """Export processed data to CSV and generate summary"""
         try:
@@ -517,6 +776,10 @@ class AbstractStreamerDashboard:
             # Step 3: Fetch Twitch data
             print("\n🌐 Fetching live Twitch data...")
             await self.fetch_all_streamer_data()
+
+            # Step 3.5: Fetch Twitter data
+            print("\n🐦 Fetching Twitter data...")
+            await self.fetch_all_twitter_data()
             
             # Step 4: Merge and analyze
             print("\n🔄 Merging data and calculating metrics...")
